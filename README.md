@@ -11,9 +11,9 @@ toward the neighbor does nothing — the pointer hits a hard wall.
 
 ```
 ┌────────────────────┬──────────┐
-│                    │          │
-│        DP-1        │ HDMI-A-1 │
-│   3440x1440@144    ├──────────┘
+│                    │ HDMI-A-1 │
+│        DP-1        │ 1980x1080│
+│      3440x1440     ├──────────┘
 │                    │ dead end ✗
 └────────────────────┘
 ```
@@ -43,7 +43,7 @@ helper below rebuilds it with one click when that happens.
 
 ```sh
 hyprpm update
-hyprpm add https://github.com/vanyan/hyprseam   # or a local clone of it
+hyprpm add https://github.com/VanillinT/hyprseam   # or a local clone of it
 hyprpm enable hyprseam
 ```
 
