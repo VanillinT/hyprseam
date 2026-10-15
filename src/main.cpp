@@ -5,11 +5,17 @@
 // motion. hyprseam detects that swallow and warps the pointer to the nearest
 // point on the monitor on the other side of the pushed edge, so the push
 // continues on the neighbor instead of hitting a hard wall.
+//
+// The geometry lives in geometry.hpp (Hyprland-free, unit-tested); this file
+// hooks it into the compositor.
 
 #define WLR_USE_UNSTABLE
 
+#include "geometry.hpp"
+
 #include <hyprland/src/plugins/PluginAPI.hpp>
 
+#include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/output/Monitor.hpp>
 #include <hyprland/src/pointer/PointerManager.hpp>
@@ -23,6 +29,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 inline HANDLE PHANDLE = nullptr;
 
@@ -44,13 +51,6 @@ namespace {
 
 // Pointer motion below this many logical pixels is treated as blocked.
 constexpr double BLOCKED_EPSILON = 0.02;
-// The pointer must sit within this many logical pixels of the pushed edge for
-// that edge to be considered the one it is stuck on.
-constexpr double EDGE_TRIGGER_EPSILON = 0.5;
-// Two edges count as shared when they align within this many logical pixels.
-constexpr double EDGE_SHARE_EPSILON = 0.5;
-// How far inside the neighbor the pointer is placed on transfer.
-constexpr double TRANSFER_INSET = 1.0;
 
 using tMove = void (*)(Pointer::CPointerManager*, const Vector2D&);
 
@@ -81,94 +81,12 @@ PHLMONITOR monitorOf(const Vector2D& pos) {
     return best;
 }
 
-// Nearest transfer point if the pointer is pinned against the edge of
-// `current` in the given axis direction and a monitor partially shares that
-// edge. Returns nullopt when the edge is not the one the pointer is stuck on,
-// or no neighbor sits behind it.
-std::optional<Vector2D> scanAxis(const Vector2D& pos, const Vector2D& desired, const PHLMONITOR& current, const int axis, const int direction) {
-    const CBox CURRENT_BOX = current->logicalBox();
-
-    const double EDGE      = axis == 0 ? (direction > 0 ? CURRENT_BOX.x + CURRENT_BOX.w : CURRENT_BOX.x)
-                                       : (direction > 0 ? CURRENT_BOX.y + CURRENT_BOX.h : CURRENT_BOX.y);
-    const double POS_COORD = axis == 0 ? pos.x : pos.y;
-    if (std::abs(POS_COORD - EDGE) > EDGE_TRIGGER_EPSILON)
-        return std::nullopt;
-
-    std::optional<Vector2D> best;
-    double                  bestDistance = std::numeric_limits<double>::max();
-
-    for (const auto& mon : State::monitorState()->monitors()) {
-        if (!usable(mon) || mon == current)
-            continue;
-
-        const CBox BOX = mon->logicalBox();
-
-        // The neighbor must sit exactly on the far side of the pushed edge.
-        const double SHARED = axis == 0 ? (direction > 0 ? BOX.x : BOX.x + BOX.w)
-                                        : (direction > 0 ? BOX.y : BOX.y + BOX.h);
-        if (std::abs(SHARED - EDGE) > EDGE_SHARE_EPSILON)
-            continue;
-
-        // …and the two monitors must overlap on the perpendicular axis.
-        const double PERP_LOW_A  = axis == 0 ? CURRENT_BOX.y : CURRENT_BOX.x;
-        const double PERP_HIGH_A = axis == 0 ? CURRENT_BOX.y + CURRENT_BOX.h : CURRENT_BOX.x + CURRENT_BOX.w;
-        const double PERP_LOW_B  = axis == 0 ? BOX.y : BOX.x;
-        const double PERP_HIGH_B = axis == 0 ? BOX.y + BOX.h : BOX.x + BOX.w;
-        if (std::min(PERP_HIGH_A, PERP_HIGH_B) - std::max(PERP_LOW_A, PERP_LOW_B) <= 0.0)
-            continue;
-
-        // Land just inside the neighbor's edge, clamped into its extent.
-        Vector2D target;
-        if (axis == 0) {
-            target.x = direction > 0 ? BOX.x + TRANSFER_INSET : BOX.x + BOX.w - TRANSFER_INSET;
-            target.y = std::clamp(pos.y, BOX.y + TRANSFER_INSET, BOX.y + BOX.h - TRANSFER_INSET);
-        } else {
-            target.y = direction > 0 ? BOX.y + TRANSFER_INSET : BOX.y + BOX.h - TRANSFER_INSET;
-            target.x = std::clamp(pos.x, BOX.x + TRANSFER_INSET, BOX.x + BOX.w - TRANSFER_INSET);
-        }
-
-        const double DISTANCE = target.distanceSq(desired);
-        if (DISTANCE < bestDistance) {
-            best         = target;
-            bestDistance = DISTANCE;
-        }
-    }
-
-    return best;
-}
-
-// Where to put the pointer when a push from pos towards desired was blocked,
-// or nullopt when the block is not a dead end of the driven edge.
-std::optional<Vector2D> findTransferTarget(const Vector2D& pos, const Vector2D& desired) {
-    const auto CURRENT = monitorOf(pos);
-    if (!CURRENT)
-        return std::nullopt;
-
-    const Vector2D PUSH = desired - pos;
-
-    std::optional<Vector2D> best;
-    double                  bestDistance = std::numeric_limits<double>::max();
-
-    const auto CONSIDER = [&](std::optional<Vector2D> candidate) {
-        if (!candidate)
-            return;
-        const double DISTANCE = candidate->distanceSq(desired);
-        if (DISTANCE < bestDistance) {
-            best         = candidate;
-            bestDistance = DISTANCE;
-        }
-    };
-
-    if (PUSH.x > 1e-6)
-        CONSIDER(scanAxis(pos, desired, CURRENT, 0, 1));
-    if (PUSH.x < -1e-6)
-        CONSIDER(scanAxis(pos, desired, CURRENT, 0, -1));
-    if (PUSH.y > 1e-6)
-        CONSIDER(scanAxis(pos, desired, CURRENT, 1, 1));
-    if (PUSH.y < -1e-6)
-        CONSIDER(scanAxis(pos, desired, CURRENT, 1, -1));
-
-    return best;
+// cursor:hotspot_padding (0 by default, Hyprland clamps it to 0..100). When
+// set, Hyprland parks the pointer that far inside the edge, so the transfer
+// trigger and the landing inset must grow by it too.
+double cursorPadding() {
+    static auto PADDING = CConfigValue<Config::INTEGER>("cursor:hotspot_padding");
+    return std::clamp(static_cast<double>(*PADDING), 0.0, 100.0);
 }
 
 void hkMove(Pointer::CPointerManager* self, const Vector2D& deltaLogical) {
@@ -195,7 +113,21 @@ void hkMove(Pointer::CPointerManager* self, const Vector2D& deltaLogical) {
     if (NProtocols::inputCapture && NProtocols::inputCapture->isCaptured())
         return;
 
-    const auto TARGET = findTransferTarget(POS_AFTER, POS_BEFORE + deltaLogical);
+    const auto CURRENT = monitorOf(POS_AFTER);
+    if (!CURRENT)
+        return;
+
+    std::vector<CBox> others;
+    for (const auto& mon : State::monitorState()->monitors()) {
+        if (!usable(mon) || mon == CURRENT)
+            continue;
+        others.push_back(mon->logicalBox());
+    }
+
+    const double PADDING = cursorPadding();
+
+    const auto TARGET = hyprseam::findTransferTarget(POS_AFTER, POS_BEFORE + deltaLogical, CURRENT->logicalBox(), others, hyprseam::EDGE_TRIGGER_EPSILON + PADDING,
+                                                     hyprseam::TRANSFER_INSET + PADDING);
     if (!TARGET)
         return;
 
@@ -230,7 +162,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("hyprseam: failed to hook CPointerManager::move");
     }
 
-    return {"hyprseam", "Seamless pointer transfer across partially shared monitor edges", "vanyan", "0.1.0"};
+    return {"hyprseam", "Seamless pointer transfer across partially shared monitor edges", "VanillinT", "0.1.0"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {

@@ -1,10 +1,10 @@
 [repository]
 name = "hyprseam"
-authors = ["vanyan"]
+authors = ["VanillinT"]
 
 [hyprseam]
 description = "Seamless pointer transfer across partially shared monitor edges"
-authors = ["vanyan"]
+authors = ["VanillinT"]
 output = "build/hyprseam.so"
 build = [
     "cmake --no-warn-unused-cli -DCMAKE_BUILD_TYPE:STRING=Release -S . -B ./build",

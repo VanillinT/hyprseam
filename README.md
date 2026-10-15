@@ -33,6 +33,23 @@ extent. The push then continues naturally on the other side.
 - Skipped while a pointer constraint (locked/confined pointer, e.g. games) or
   a client input capture session is active.
 
+## Monitor topologies
+
+Any number of monitors of any sizes works — only the local topology at the
+pushed edge matters:
+
+- a tall monitor's edge shared by several smaller monitors works: the
+  neighbor whose landing point is closest to the push wins;
+- monitors left of / above the origin (negative coordinates), mixed scales and
+  rotated monitors are fine; everything is logical geometry;
+- edges must genuinely align (within half a logical pixel) and overlap: light
+  gaps in the layout and monitors that only touch corner-to-corner stay hard
+  walls, as does an edge with no neighbor behind it;
+- mirrored, disabled and headless monitors are ignored, matching the set
+  Hyprland clamps the pointer layout to;
+- a non-default `cursor:hotspot_padding` is accounted for: the trigger
+  tolerance and the landing inset grow with it, so dead ends still transfer.
+
 ## Requirements
 
 Hyprland 0.56.x. The plugin uses a raw trampoline hook, so it must be rebuilt
@@ -64,6 +81,18 @@ o.exec_on_start(os.getenv("HOME") .. "/.local/bin/hyprpm-reload-notify")
 ```sh
 cmake --no-warn-unused-cli -DCMAKE_BUILD_TYPE:STRING=Release -S . -B ./build
 cmake --build ./build --config Release --target all -j"$(nproc)"
+```
+
+## Tests
+
+The transfer geometry is pure math and has synthetic-layout tests (stacked
+neighbors, dead strips, gaps, corner-only touches, negative coordinates and
+padded cursors):
+
+```sh
+cmake -S . -B build-tests -DHYPRSEAM_BUILD_TESTS=ON
+cmake --build build-tests
+ctest --test-dir build-tests --output-on-failure
 ```
 
 ## Tested with
